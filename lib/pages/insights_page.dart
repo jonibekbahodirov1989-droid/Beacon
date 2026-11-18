@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:math' as math;
 
 import '../services/trip_service.dart';
 import '../theme/beacon_theme.dart';
@@ -204,6 +205,25 @@ class _InsightsPageState extends State<InsightsPage> {
     final periodSafePlaceTotals =
         _safePlaceSecondsByPlace(currentStart, currentEnd).values.toList()
           ..sort((first, second) => second.seconds.compareTo(first.seconds));
+    final periodCategoryTotals = <SafePlaceCategory, int>{};
+    for (final visit in [
+      ...widget.safePlaceVisits,
+      if (widget.activeSafePlaceVisit case final active?) active,
+    ]) {
+      final seconds = visit.secondsOverlapping(currentStart, currentEnd);
+      if (seconds > 0) {
+        periodCategoryTotals.update(
+          visit.category,
+          (total) => total + seconds,
+          ifAbsent: () => seconds,
+        );
+      }
+    }
+    final maxCarSpeed = currentTrips.fold<double>(
+      0,
+      (maximum, trip) =>
+          trip.maxCarSpeedKmh > maximum ? trip.maxCarSpeedKmh : maximum,
+    );
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
       children: [
@@ -357,7 +377,7 @@ class _InsightsPageState extends State<InsightsPage> {
           children: [
             Expanded(
               child: Text(
-                'Saved-place time today',
+                'Place time today',
                 style: TextStyle(
                   color: BeaconColors.ink,
                   fontSize: 18,
@@ -375,7 +395,7 @@ class _InsightsPageState extends State<InsightsPage> {
               ? const _InsightRow(
                   icon: Icons.home_outlined,
                   color: BeaconColors.forest,
-                  title: 'No saved-place time yet',
+                  title: 'No place-time yet',
                   detail:
                       'Time inside your saved areas will appear here while tracking is active.',
                 )
@@ -399,7 +419,7 @@ class _InsightsPageState extends State<InsightsPage> {
                     _InsightRow(
                       icon: Icons.schedule_rounded,
                       color: BeaconColors.coral,
-                      title: 'Total time at saved places',
+                      title: 'Total time at places',
                       detail:
                           '${_formatStayDuration(todaySafePlaceTotals.fold<int>(0, (total, place) => total + place.seconds))} today',
                     ),
@@ -459,10 +479,10 @@ class _InsightsPageState extends State<InsightsPage> {
               _InsightRow(
                 icon: Icons.speed_rounded,
                 color: BeaconColors.forest,
-                title: 'Average speed',
+                title: 'Average speed · highest car speed',
                 detail: tripMinutes == 0
                     ? 'No timed trip data in this period yet.'
-                    : '${averageSpeed.toStringAsFixed(1)} km/h across timed trips.',
+                    : '${averageSpeed.toStringAsFixed(1)} km/h average · ${maxCarSpeed.toStringAsFixed(1)} km/h max car speed.',
               ),
               const Divider(height: 18, color: BeaconColors.line),
               _InsightRow(
@@ -477,11 +497,136 @@ class _InsightsPageState extends State<InsightsPage> {
               _InsightRow(
                 icon: Icons.home_work_outlined,
                 color: BeaconColors.coral,
-                title: 'Time at saved places',
+                title: 'Time at places',
                 detail: periodSafePlaceSeconds == 0
-                    ? 'No saved-place visits recorded this ${_period.toLowerCase()} yet.'
-                    : '${_formatStayDuration(periodSafePlaceSeconds)} at saved places this ${_period.toLowerCase()}${periodSafePlaceTotals.isEmpty ? '' : ' · longest: ${periodSafePlaceTotals.first.name}'}.',
+                    ? 'No place visits recorded this ${_period.toLowerCase()} yet.'
+                    : '${_formatStayDuration(periodSafePlaceSeconds)} at places this ${_period.toLowerCase()}${periodSafePlaceTotals.isEmpty ? '' : ' · longest: ${periodSafePlaceTotals.first.name}'}.',
               ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 23),
+        const Row(
+          children: [
+            Expanded(
+              child: Text(
+                'Where your time goes',
+                style: TextStyle(
+                  color: BeaconColors.ink,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            Icon(Icons.pie_chart_outline_rounded,
+                color: BeaconColors.forest, size: 19),
+          ],
+        ),
+        const SizedBox(height: 10),
+        SurfacePanel(
+          padding: 14,
+          child: periodCategoryTotals.isEmpty
+              ? const _InsightRow(
+                  icon: Icons.place_outlined,
+                  color: BeaconColors.forest,
+                  title: 'No place-time data yet',
+                  detail:
+                      'Save a place and track visits to see your daily patterns.',
+                )
+              : _PlaceTimeBreakdown(values: periodCategoryTotals),
+        ),
+      ],
+    );
+  }
+}
+
+class _PlaceTimeBreakdown extends StatelessWidget {
+  const _PlaceTimeBreakdown({required this.values});
+
+  final Map<SafePlaceCategory, int> values;
+
+  @override
+  Widget build(BuildContext context) {
+    final entries = values.entries.toList()
+      ..sort((first, second) => second.value.compareTo(first.value));
+    final total = entries.fold<int>(0, (sum, entry) => sum + entry.value);
+    return Row(
+      children: [
+        SizedBox(
+          width: 116,
+          height: 116,
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              CustomPaint(
+                size: const Size.square(116),
+                painter: _PlaceTimeDonutPainter(values: values),
+              ),
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _formatStayDuration(total),
+                    style: const TextStyle(
+                      color: BeaconColors.ink,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const Text(
+                    'TOTAL',
+                    style: TextStyle(
+                      color: BeaconColors.muted,
+                      fontSize: 8,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 14),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final entry in entries) ...[
+                if (entry != entries.first) const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Container(
+                      width: 9,
+                      height: 9,
+                      decoration: BoxDecoration(
+                        color: _placeCategoryColor(entry.key),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: Text(
+                        _placeCategoryName(entry.key),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: BeaconColors.ink,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      _formatStayDuration(entry.value),
+                      style: const TextStyle(
+                        color: BeaconColors.muted,
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ],
           ),
         ),
@@ -489,6 +634,50 @@ class _InsightsPageState extends State<InsightsPage> {
     );
   }
 }
+
+class _PlaceTimeDonutPainter extends CustomPainter {
+  const _PlaceTimeDonutPainter({required this.values});
+
+  final Map<SafePlaceCategory, int> values;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final total = values.values.fold<int>(0, (sum, value) => sum + value);
+    if (total <= 0) return;
+    final rect = Offset.zero & size;
+    final paint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 15
+      ..strokeCap = StrokeCap.butt;
+    var startAngle = -math.pi / 2;
+    for (final entry in values.entries) {
+      final sweep = entry.value / total * math.pi * 2;
+      paint.color = _placeCategoryColor(entry.key);
+      canvas.drawArc(rect.deflate(8), startAngle, sweep, false, paint);
+      startAngle += sweep;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _PlaceTimeDonutPainter oldDelegate) =>
+      oldDelegate.values != values;
+}
+
+Color _placeCategoryColor(SafePlaceCategory category) => switch (category) {
+      SafePlaceCategory.home => BeaconColors.forest,
+      SafePlaceCategory.school => BeaconColors.blue,
+      SafePlaceCategory.work => BeaconColors.coral,
+      SafePlaceCategory.other => const Color(0xFF8A6BC1),
+      SafePlaceCategory.unknown => BeaconColors.muted,
+    };
+
+String _placeCategoryName(SafePlaceCategory category) => switch (category) {
+      SafePlaceCategory.home => 'Home',
+      SafePlaceCategory.school => 'School',
+      SafePlaceCategory.work => 'Work',
+      SafePlaceCategory.other => 'Other',
+      SafePlaceCategory.unknown => 'Unknown stops',
+    };
 
 class _PeriodSelector extends StatelessWidget {
   const _PeriodSelector({

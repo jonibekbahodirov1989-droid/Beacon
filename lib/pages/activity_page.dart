@@ -5,9 +5,16 @@ import '../theme/beacon_theme.dart';
 import '../widgets/beacon_widgets.dart';
 
 class ActivityPage extends StatefulWidget {
-  const ActivityPage({required this.tripService, super.key});
+  const ActivityPage({
+    required this.tripService,
+    this.safePlaceVisits = const [],
+    this.activeSafePlaceVisit,
+    super.key,
+  });
 
   final TripService tripService;
+  final List<SafePlaceVisit> safePlaceVisits;
+  final SafePlaceVisit? activeSafePlaceVisit;
 
   @override
   State<ActivityPage> createState() => _ActivityPageState();
@@ -54,6 +61,14 @@ class _ActivityPageState extends State<ActivityPage> {
     return '${remainingMinutes}m';
   }
 
+  String _categoryLabel(SafePlaceCategory category) => switch (category) {
+        SafePlaceCategory.home => 'Home',
+        SafePlaceCategory.school => 'School',
+        SafePlaceCategory.work => 'Work',
+        SafePlaceCategory.other => 'Other',
+        SafePlaceCategory.unknown => 'Unknown stop',
+      };
+
   @override
   Widget build(BuildContext context) {
     final trip = _activeTrip;
@@ -64,6 +79,14 @@ class _ActivityPageState extends State<ActivityPage> {
       0,
       (total, item) => total + item.totalMinutes.round(),
     );
+    final selectedDate = DateTime.now().subtract(Duration(days: _selectedDay));
+    final dayStart = DateTime(selectedDate.year, selectedDate.month, selectedDate.day);
+    final dayEnd = dayStart.add(const Duration(days: 1));
+    final visits = [
+      ...widget.safePlaceVisits,
+      if (widget.activeSafePlaceVisit case final active?) active,
+    ].where((visit) => visit.secondsOverlapping(dayStart, dayEnd) > 0).toList()
+      ..sort((first, second) => second.startedAt.compareTo(first.startedAt));
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 28),
@@ -370,6 +393,82 @@ class _ActivityPageState extends State<ActivityPage> {
                       icon: Icons.directions_walk_rounded,
                       color: BeaconColors.coral,
                     ),
+                  ],
+                ),
+        ),
+        const SizedBox(height: 22),
+        Row(
+          children: [
+            const Expanded(
+              child: Text(
+                'Place history',
+                style: TextStyle(
+                  color: BeaconColors.ink,
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            Text(
+              '${visits.length} ${visits.length == 1 ? 'stay' : 'stays'}',
+              style: const TextStyle(
+                color: BeaconColors.muted,
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 9),
+        SurfacePanel(
+          padding: 12,
+          child: visits.isEmpty
+              ? const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Text(
+                    'No saved-place or confirmed unknown stops for this day.',
+                    style: TextStyle(color: BeaconColors.muted),
+                  ),
+                )
+              : Column(
+                  children: [
+                    for (var index = 0; index < visits.length; index++) ...[
+                      if (index > 0)
+                        const Divider(height: 1, color: BeaconColors.line),
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(
+                          Icons.place_rounded,
+                          color: BeaconColors.forest,
+                        ),
+                        title: Text(
+                          visits[index].placeName,
+                          style: const TextStyle(
+                            color: BeaconColors.ink,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        subtitle: Text(
+                          '${_categoryLabel(visits[index].category)} · ${_formatTime(visits[index].startedAt)}–${_formatTime(visits[index].endedAt)}',
+                          style: const TextStyle(
+                            color: BeaconColors.muted,
+                            fontSize: 11,
+                          ),
+                        ),
+                        trailing: Text(
+                          _formatTotalDuration(
+                            (visits[index]
+                                        .secondsOverlapping(dayStart, dayEnd) /
+                                    60)
+                                .round(),
+                          ),
+                          style: const TextStyle(
+                            color: BeaconColors.forest,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
         ),

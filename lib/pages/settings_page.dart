@@ -7,6 +7,7 @@ class SettingsPage extends StatefulWidget {
   const SettingsPage({
     required this.trackingEnabled,
     required this.onTrackingChanged,
+    required this.onAutomaticTrackingChanged,
     required this.userEmail,
     required this.userSettings,
     this.themePreset = BeaconThemePreset.active,
@@ -17,6 +18,7 @@ class SettingsPage extends StatefulWidget {
 
   final bool trackingEnabled;
   final ValueChanged<bool> onTrackingChanged;
+  final ValueChanged<bool> onAutomaticTrackingChanged;
   final String userEmail;
   final UserSettings userSettings;
   final BeaconThemePreset themePreset;
@@ -31,6 +33,7 @@ class _SettingsPageState extends State<SettingsPage> {
   late bool _approximateLocation = widget.userSettings.approximateLocation;
   late bool _familySharing = widget.userSettings.familySharing;
   late bool _notifications = widget.userSettings.notifications;
+  late bool _automaticTracking = widget.userSettings.automaticTracking;
   late BeaconThemePreset _selectedTheme = widget.userSettings.themePreset;
 
   @override
@@ -42,6 +45,7 @@ class _SettingsPageState extends State<SettingsPage> {
         _approximateLocation = widget.userSettings.approximateLocation;
         _familySharing = widget.userSettings.familySharing;
         _notifications = widget.userSettings.notifications;
+        _automaticTracking = widget.userSettings.automaticTracking;
         _selectedTheme = widget.userSettings.themePreset;
       });
     }
@@ -241,6 +245,29 @@ class _SettingsPageState extends State<SettingsPage> {
                   SwitchListTile.adaptive(
                     contentPadding: const EdgeInsets.symmetric(horizontal: 14),
                     secondary: const _SettingIcon(
+                      Icons.autorenew_rounded,
+                      color: BeaconColors.forest,
+                    ),
+                    title: const Text('Automatic tracking'),
+                    subtitle: const Text(
+                      'Start on app launch; trips save daily. Pause or End turns this off.',
+                    ),
+                    value: _automaticTracking,
+                    activeThumbColor: BeaconColors.lime,
+                    activeTrackColor: BeaconColors.forest,
+                    onChanged: (value) {
+                      setState(() => _automaticTracking = value);
+                      widget.onAutomaticTrackingChanged(value);
+                    },
+                  ),
+                  const Divider(
+                    height: 1,
+                    indent: 62,
+                    color: BeaconColors.line,
+                  ),
+                  SwitchListTile.adaptive(
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 14),
+                    secondary: const _SettingIcon(
                       Icons.location_searching,
                       color: BeaconColors.forest,
                     ),
@@ -257,6 +284,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           approximateLocation: value,
                           familySharing: _familySharing,
                           notifications: _notifications,
+                          automaticTracking: _automaticTracking,
                         ),
                       );
                     },
@@ -290,6 +318,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           familySharing: value,
                           approximateLocation: _approximateLocation,
                           notifications: _notifications,
+                          automaticTracking: _automaticTracking,
                         ),
                       );
                     },
@@ -317,6 +346,7 @@ class _SettingsPageState extends State<SettingsPage> {
                           notifications: value,
                           approximateLocation: _approximateLocation,
                           familySharing: _familySharing,
+                          automaticTracking: _automaticTracking,
                         ),
                       );
                     },

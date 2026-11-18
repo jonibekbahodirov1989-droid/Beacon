@@ -5,26 +5,41 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../auth/auth_service.dart';
 import '../services/firestore_service.dart';
+import '../services/location_service.dart';
 import '../theme/beacon_theme.dart';
 import '../widgets/beacon_widgets.dart';
 
 enum _NotificationFilter { all, emergency, requests }
+
+String _formatPlaceDuration(int seconds) {
+  final duration = Duration(seconds: seconds);
+  if (duration.inHours > 0) {
+    return '${duration.inHours}h ${duration.inMinutes.remainder(60)}m';
+  }
+  return '${duration.inMinutes}m';
+}
 
 class NotificationsPage extends StatefulWidget {
   const NotificationsPage({
     required this.userId,
     required this.currentUser,
     required this.firestoreService,
+    required this.locationService,
     this.initialInvitations = const [],
     this.themePreset = BeaconThemePreset.active,
+    this.currentPlaceName,
+    this.currentPlaceDurationSeconds = 0,
     super.key,
   });
 
   final String userId;
   final AuthUser currentUser;
   final FirestoreService firestoreService;
+  final LocationService locationService;
   final List<FamilyInvitation> initialInvitations;
   final BeaconThemePreset themePreset;
+  final String? currentPlaceName;
+  final int currentPlaceDurationSeconds;
 
   @override
   State<NotificationsPage> createState() => _NotificationsPageState();
@@ -191,6 +206,14 @@ class _NotificationsPageState extends State<NotificationsPage> {
                     return ListView(
                       padding: const EdgeInsets.fromLTRB(20, 14, 20, 32),
                       children: [
+                        _MovementActivityCard(
+                          locationService: widget.locationService,
+                          themePreset: widget.themePreset,
+                          placeName: widget.currentPlaceName,
+                          placeDurationSeconds:
+                              widget.currentPlaceDurationSeconds,
+                        ),
+                        const SizedBox(height: 12),
                         _NotificationFilterBar(
                           selected: _filter,
                           onChanged: (filter) =>
@@ -315,6 +338,130 @@ class _NotificationsPageState extends State<NotificationsPage> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _MovementActivityCard extends StatelessWidget {
+  const _MovementActivityCard({
+    required this.locationService,
+    required this.themePreset,
+    this.placeName,
+    this.placeDurationSeconds = 0,
+  });
+
+  final LocationService locationService;
+  final BeaconThemePreset themePreset;
+  final String? placeName;
+  final int placeDurationSeconds;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = BeaconAppTheme.forPreset(themePreset);
+    return ValueListenableBuilder<MovementStatus>(
+      valueListenable: locationService.movementStatus,
+      builder: (context, status, _) {
+        final tracking = locationService.trackingEnabled;
+        final isFresh = tracking && status.isKnown && status.isFresh;
+        final title = !tracking
+            ? 'Tracking is paused'
+            : isFresh
+                ? status.label
+                : 'Detecting movement';
+        final detail = !tracking
+            ? 'Start tracking to see your current activity and speed.'
+            : isFresh
+                ? '${status.speedKmh.toStringAsFixed(1)} km/h · Based on recent GPS readings'
+                : 'Waiting for a reliable GPS speed reading.';
+        return Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: theme.surfaceColor.withValues(alpha: 0.94),
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(color: theme.accentColor.withValues(alpha: 0.3)),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0x14000000),
+                blurRadius: 12,
+                offset: Offset(0, 4),
+              ),
+            ],
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 46,
+                height: 46,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: theme.cardColor,
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: Text(
+                  isFresh ? status.emoji : '📍',
+                  style: const TextStyle(fontSize: 23),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'YOUR MOVEMENT',
+                      style: TextStyle(
+                        color: theme.accentColor,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.8,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      title,
+                      style: TextStyle(
+                        color: theme.textColor,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      detail,
+                      style: TextStyle(
+                        color: theme.textColor.withValues(alpha: 0.72),
+                        fontSize: 11,
+                      ),
+                    ),
+                    if (tracking && placeName != null) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        'At $placeName · ${_formatPlaceDuration(placeDurationSeconds)} here',
+                        style: TextStyle(
+                          color: theme.accentColor,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              if (isFresh)
+                Text(
+                  '${status.speedKmh.round()}\nkm/h',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: theme.accentColor,
+                    fontSize: 14,
+                    height: 1.15,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
     );
   }
 }

@@ -53,6 +53,8 @@ class MapPage extends StatefulWidget {
     required this.locationService,
     required this.firestoreService,
     required this.tripService,
+    this.safePlaces = const [],
+    this.activePlaceVisit,
     super.key,
   });
 
@@ -62,6 +64,8 @@ class MapPage extends StatefulWidget {
   final LocationService locationService;
   final FirestoreService firestoreService;
   final TripService tripService;
+  final List<SafePlace> safePlaces;
+  final SafePlaceVisit? activePlaceVisit;
 
   static const heatmapCellRadiusMeters = 35.0;
   static const _maximumHeatmapAccuracyMeters = 35.0;
@@ -257,11 +261,16 @@ class _MapPageState extends State<MapPage> {
   Position? _lastTracePosition;
   bool _locating = false;
   bool _opened = false;
+  bool _tilesUnavailable = false;
+  int _tileLayerKey = 0;
+  bool _autoCenteredOnContacts = false;
 
   @override
   void initState() {
     super.initState();
     _opened = widget.active;
+    _currentLocation =
+        _positionToLatLng(widget.locationService.lastKnownPosition);
     if (widget.trackingEnabled) {
       final positions = widget.locationService.trackedPositions;
       _trackingTraceSegments = MapPage.buildTrackingSegments(
@@ -324,7 +333,8 @@ class _MapPageState extends State<MapPage> {
     }
     if (widget.active && !oldWidget.active) {
       _opened = true;
-      _currentLocation = null;
+      _currentLocation =
+          _positionToLatLng(widget.locationService.lastKnownPosition);
       unawaited(_refreshCurrentLocation());
     }
   }
@@ -366,9 +376,16 @@ class _MapPageState extends State<MapPage> {
       markers.add(
         Marker(
           point: current,
-          width: 52,
-          height: 58,
-          child: const _MapPin(label: 'You', color: BeaconColors.lime),
+          width: 210,
+          height: 96,
+          alignment: Alignment.center,
+          child: _CurrentLocationMarker(
+            status: widget.locationService.movementStatus.value,
+            trackingEnabled: widget.trackingEnabled,
+            placeName: widget.activePlaceVisit?.placeName,
+            placeDurationSeconds:
+                widget.activePlaceVisit?.durationSeconds ?? 0,
+          ),
         ),
       );
     }
@@ -498,12 +515,27 @@ class _MapPageState extends State<MapPage> {
         .showSnackBar(SnackBar(content: Text(message)));
   }
 
+  void _reportTileError(TileImage tile, Object error, StackTrace? stackTrace) {
+    if (!mounted || _tilesUnavailable) return;
+    setState(() => _tilesUnavailable = true);
+  }
+
+  void _retryMapTiles() {
+    setState(() {
+      _tilesUnavailable = false;
+      _tileLayerKey++;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     if (!_opened) {
       return const ColoredBox(color: BeaconColors.paper);
     }
     final trips = widget.tripService.trips;
+    final hasLocationAnchor = _currentLocation != null ||
+        _positionToLatLng(widget.locationService.lastKnownPosition) != null ||
+        trips.any((trip) => trip.points.isNotEmpty);
     final points = MapPage.heatmapPoints(
       trips,
       now: DateTime.now(),
@@ -513,6 +545,23 @@ class _MapPageState extends State<MapPage> {
       stream: _familyContacts,
       builder: (context, snapshot) {
         final contacts = snapshot.data ?? const <FamilyContact>[];
+        final hasFamilyLocation = contacts.any(
+          (contact) =>
+              contact.latitude != null &&
+              contact.longitude != null &&
+              contact.latitude!.isFinite &&
+              contact.longitude!.isFinite,
+        );
+        if (!_autoCenteredOnContacts &&
+            _currentLocation == null &&
+            hasFamilyLocation) {
+          _autoCenteredOnContacts = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _currentLocation == null) {
+              unawaited(_fitVisibleLocations(contacts));
+            }
+          });
+        }
         final markers =
             _mode == _MapMode.live ? _markers(contacts) : <Marker>[];
         return Stack(
@@ -522,18 +571,50 @@ class _MapPageState extends State<MapPage> {
               mapController: _mapController,
               options: MapOptions(
                 initialCenter: _initialTarget,
-                initialZoom: _currentLocation == null ? 2 : 14,
+                initialZoom: hasLocationAnchor ? 14 : 2,
                 maxZoom: 23,
               ),
               children: [
                 TileLayer(
+                  key: ValueKey(_tileLayerKey),
                   urlTemplate: _baseMap == _BaseMap.street
                       ? 'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
                       : 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
                   userAgentPackageName: 'com.example.beacon',
                   maxZoom: 23,
                   maxNativeZoom: _baseMap == _BaseMap.street ? 19 : 17,
+                  errorTileCallback: _reportTileError,
                 ),
+                if (_mode == _MapMode.live)
+                  CircleLayer(
+                    circles: [
+                      for (final place in widget.safePlaces)
+                        CircleMarker(
+                          point: LatLng(place.latitude, place.longitude),
+                          radius: place.radiusMeters,
+                          useRadiusInMeter: true,
+                          color: BeaconColors.forest.withValues(alpha: 0.12),
+                          borderColor: BeaconColors.forest.withValues(alpha: 0.7),
+                          borderStrokeWidth: 2,
+                        ),
+                      if (widget.activePlaceVisit?.category ==
+                              SafePlaceCategory.unknown &&
+                          widget.activePlaceVisit?.latitude != null &&
+                          widget.activePlaceVisit?.longitude != null &&
+                          widget.activePlaceVisit?.radiusMeters != null)
+                        CircleMarker(
+                          point: LatLng(
+                            widget.activePlaceVisit!.latitude!,
+                            widget.activePlaceVisit!.longitude!,
+                          ),
+                          radius: widget.activePlaceVisit!.radiusMeters!,
+                          useRadiusInMeter: true,
+                          color: BeaconColors.coral.withValues(alpha: 0.14),
+                          borderColor: BeaconColors.coral.withValues(alpha: 0.8),
+                          borderStrokeWidth: 2,
+                        ),
+                    ],
+                  ),
                 if (_mode == _MapMode.live) MarkerLayer(markers: markers),
                 if (_mode == _MapMode.live &&
                     widget.trackingEnabled &&
@@ -582,8 +663,10 @@ class _MapPageState extends State<MapPage> {
                     mode: _mode,
                     onModeChanged: (mode) => setState(() => _mode = mode),
                     baseMap: _baseMap,
-                    onBaseMapChanged: (baseMap) =>
-                        setState(() => _baseMap = baseMap),
+                    onBaseMapChanged: (baseMap) => setState(() {
+                      _baseMap = baseMap;
+                      _tilesUnavailable = false;
+                    }),
                     heatWindow: _heatWindow,
                     onHeatWindowChanged: (window) =>
                         setState(() => _heatWindow = window),
@@ -591,6 +674,35 @@ class _MapPageState extends State<MapPage> {
                 ),
               ),
             ),
+            if (_tilesUnavailable)
+              Positioned(
+                left: 14,
+                right: 14,
+                bottom: 174,
+                child: _MapTileErrorNotice(onRetry: _retryMapTiles),
+              ),
+            if (!_tilesUnavailable &&
+                !snapshot.hasError &&
+                !hasLocationAnchor &&
+                !hasFamilyLocation)
+              Positioned(
+                left: 14,
+                right: 14,
+                bottom: 174,
+                child: _MapTileErrorNotice(
+                  message: 'Location unavailable. Enable GPS and try again.',
+                  onRetry: () => unawaited(_centerOnMe()),
+                ),
+              ),
+            if (snapshot.hasError)
+              const Positioned(
+                left: 14,
+                right: 14,
+                bottom: 224,
+                child: _MapTileErrorNotice(
+                  message: 'Family locations are unavailable right now.',
+                ),
+              ),
             Align(
               alignment: Alignment.bottomLeft,
               child: Padding(
@@ -861,6 +973,152 @@ class _MapAction extends StatelessWidget {
   }
 }
 
+class _CurrentLocationMarker extends StatelessWidget {
+  const _CurrentLocationMarker({
+    required this.status,
+    required this.trackingEnabled,
+    this.placeName,
+    this.placeDurationSeconds = 0,
+  });
+
+  final MovementStatus status;
+  final bool trackingEnabled;
+  final String? placeName;
+  final int placeDurationSeconds;
+
+  @override
+  Widget build(BuildContext context) {
+    final showStatus = trackingEnabled && status.isKnown && status.isFresh;
+    return SizedBox(
+      width: 210,
+      height: 96,
+      child: Stack(
+        clipBehavior: Clip.none,
+        alignment: Alignment.center,
+        children: [
+          Align(
+            alignment: Alignment.topCenter,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(18),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x33000000),
+                    blurRadius: 6,
+                    offset: Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        showStatus ? status.emoji : '📍',
+                        style: const TextStyle(fontSize: 16),
+                      ),
+                      const SizedBox(width: 5),
+                      Text(
+                        showStatus
+                            ? '${status.label} · ${status.speedKmh.round()} km/h'
+                            : 'You',
+                        style: const TextStyle(
+                          color: BeaconColors.ink,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (trackingEnabled && placeName != null) ...[
+                    const SizedBox(height: 1),
+                    Text(
+                      '$placeName · ${_formatPlaceDuration(placeDurationSeconds)}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: BeaconColors.forest,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          Positioned(
+            top: 37,
+            child: Container(
+              width: 22,
+              height: 22,
+              decoration: BoxDecoration(
+                color: BeaconColors.lime,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 3),
+                boxShadow: const [
+                  BoxShadow(
+                    color: Color(0x44000000),
+                    blurRadius: 6,
+                    offset: Offset(0, 2),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MapTileErrorNotice extends StatelessWidget {
+  const _MapTileErrorNotice({
+    this.message = 'Map tiles could not load. Check your connection.',
+    this.onRetry,
+  });
+
+  final String message;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(12),
+      elevation: 3,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        child: Row(
+          children: [
+            const Icon(Icons.map_outlined, color: BeaconColors.coral),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                message,
+                style: const TextStyle(
+                  color: BeaconColors.ink,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            if (onRetry != null)
+              TextButton(
+                onPressed: onRetry,
+                child: const Text('Retry'),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _MapPin extends StatelessWidget {
   const _MapPin({
     required this.label,
@@ -943,4 +1201,12 @@ String _relativeTime(DateTime? value) {
   if (age.inHours < 1) return '${age.inMinutes}m ago';
   if (age.inDays < 1) return '${age.inHours}h ago';
   return '${age.inDays}d ago';
+}
+
+String _formatPlaceDuration(int seconds) {
+  final duration = Duration(seconds: seconds);
+  if (duration.inHours > 0) {
+    return '${duration.inHours}h ${duration.inMinutes.remainder(60)}m';
+  }
+  return '${duration.inMinutes}m';
 }

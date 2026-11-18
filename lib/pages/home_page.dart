@@ -22,6 +22,9 @@ class HomePage extends StatelessWidget {
     this.locationLabel,
     this.currentSafePlaceName,
     this.currentSafePlaceTripSeconds = 0,
+    this.currentSafePlaceVisitSeconds = 0,
+    this.safePlaceVisits = const [],
+    this.activeSafePlaceVisit,
     super.key,
   });
 
@@ -42,6 +45,9 @@ class HomePage extends StatelessWidget {
   final String? locationLabel;
   final String? currentSafePlaceName;
   final int currentSafePlaceTripSeconds;
+  final int currentSafePlaceVisitSeconds;
+  final List<SafePlaceVisit> safePlaceVisits;
+  final SafePlaceVisit? activeSafePlaceVisit;
 
   @override
   Widget build(BuildContext context) {
@@ -73,6 +79,22 @@ class HomePage extends StatelessWidget {
       final age = _calendarDayDifference(now, trip.startedAt);
       return age >= 7 && age < 14;
     }).fold<double>(0, (sum, trip) => sum + trip.distanceMeters);
+    final todayStart = DateTime(now.year, now.month, now.day);
+    final todayEnd = todayStart.add(const Duration(days: 1));
+    final placeTotals = <SafePlaceCategory, int>{};
+    for (final visit in [
+      ...safePlaceVisits,
+      if (activeSafePlaceVisit case final active?) active,
+    ]) {
+      final seconds = visit.secondsOverlapping(todayStart, todayEnd);
+      if (seconds > 0) {
+        placeTotals.update(
+          visit.category,
+          (total) => total + seconds,
+          ifAbsent: () => seconds,
+        );
+      }
+    }
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 14, 20, 24),
@@ -266,6 +288,9 @@ class HomePage extends StatelessWidget {
           trackingDuration: trackingDuration,
           currentSafePlaceName: currentSafePlaceName,
           currentSafePlaceTripSeconds: currentSafePlaceTripSeconds,
+          currentSafePlaceVisitSeconds: currentSafePlaceVisitSeconds,
+          currentSafePlaceCategory:
+              activeSafePlaceVisit?.category ?? SafePlaceCategory.other,
         ),
         const SizedBox(height: 12),
         Row(
@@ -298,6 +323,26 @@ class HomePage extends StatelessWidget {
             ),
           ],
         ),
+          if (placeTotals.isNotEmpty) ...[
+            const SizedBox(height: 17),
+            const Text(
+              'Place time today',
+              style: TextStyle(
+                color: BeaconColors.ink,
+                fontSize: 17,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+            const SizedBox(height: 9),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final entry in placeTotals.entries)
+                  _PlaceTimeChip(category: entry.key, seconds: entry.value),
+              ],
+            ),
+          ],
         const SizedBox(height: 25),
         Row(
           children: [
@@ -445,6 +490,8 @@ class _TrackingPanel extends StatelessWidget {
     this.locationLabel,
     this.currentSafePlaceName,
     this.currentSafePlaceTripSeconds = 0,
+    this.currentSafePlaceVisitSeconds = 0,
+    this.currentSafePlaceCategory = SafePlaceCategory.other,
   });
 
   final bool trackingEnabled;
@@ -457,6 +504,8 @@ class _TrackingPanel extends StatelessWidget {
   final Duration trackingDuration;
   final String? currentSafePlaceName;
   final int currentSafePlaceTripSeconds;
+  final int currentSafePlaceVisitSeconds;
+  final SafePlaceCategory currentSafePlaceCategory;
 
   @override
   Widget build(BuildContext context) {
@@ -554,7 +603,7 @@ class _TrackingPanel extends StatelessWidget {
                   child: Text(
                     currentSafePlaceName == null
                         ? 'Outside a saved place · ${locationLabel ?? 'Waiting for GPS'}'
-                        : 'At $currentSafePlaceName · ${_formatDuration(Duration(seconds: currentSafePlaceTripSeconds))} this trip',
+                        : 'At ${_placeCategoryName(currentSafePlaceCategory)} · ${_formatDuration(Duration(seconds: currentSafePlaceVisitSeconds))} here · ${_formatDuration(Duration(seconds: currentSafePlaceTripSeconds))} this trip',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: const TextStyle(
@@ -670,6 +719,56 @@ class _TrackingPanel extends StatelessWidget {
     );
   }
 }
+
+class _PlaceTimeChip extends StatelessWidget {
+  const _PlaceTimeChip({required this.category, required this.seconds});
+
+  final SafePlaceCategory category;
+  final int seconds;
+
+  @override
+  Widget build(BuildContext context) {
+    final title = _placeCategoryName(category);
+    final color = switch (category) {
+      SafePlaceCategory.home => BeaconColors.forest,
+      SafePlaceCategory.school => BeaconColors.blue,
+      SafePlaceCategory.work => BeaconColors.coral,
+      SafePlaceCategory.unknown => BeaconColors.muted,
+      SafePlaceCategory.other => const Color(0xFF8A6BC1),
+    };
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(9),
+        border: Border.all(color: color.withValues(alpha: 0.2)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.place_outlined, size: 15, color: color),
+          const SizedBox(width: 6),
+          Text(
+            '$title · ${_formatDuration(Duration(seconds: seconds))}',
+            style: TextStyle(
+              color: color,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _placeCategoryName(SafePlaceCategory category) => switch (category) {
+      SafePlaceCategory.home => 'Home',
+      SafePlaceCategory.school => 'School',
+      SafePlaceCategory.work => 'Work',
+      SafePlaceCategory.other => 'Other',
+      SafePlaceCategory.unknown => 'Unknown stop',
+    };
 
 class _TodayMetric extends StatelessWidget {
   const _TodayMetric({

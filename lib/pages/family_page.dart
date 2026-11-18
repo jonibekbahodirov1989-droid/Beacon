@@ -606,9 +606,7 @@ class _FamilyPageState extends State<FamilyPage> {
                               borderRadius: BorderRadius.circular(12),
                             ),
                             child: Icon(
-                              active
-                                  ? Icons.home_filled
-                                  : Icons.place_outlined,
+                              active ? Icons.home_filled : Icons.place_outlined,
                               color: active
                                   ? BeaconColors.forest
                                   : BeaconColors.coral,
@@ -622,7 +620,7 @@ class _FamilyPageState extends State<FamilyPage> {
                             ),
                           ),
                           subtitle: Text(
-                            '${place.radiusMeters.round()} m radius · ${_formatVisitTime(place.totalVisitSeconds)} total${active ? ' · here now ${_formatVisitTime(widget.activeSafePlaceSeconds)}' : ''}',
+                            '${_safePlaceCategoryLabel(place.category)} · ${place.radiusMeters.round()} m radius · ${_formatVisitTime(place.totalVisitSeconds)} total${active ? ' · here now ${_formatVisitTime(widget.activeSafePlaceSeconds)}' : ''}',
                             maxLines: 2,
                             overflow: TextOverflow.ellipsis,
                             style: const TextStyle(
@@ -724,6 +722,7 @@ class _SafePlacePickerPageState extends State<_SafePlacePickerPage> {
   late bool _hasSelectedCenter = widget.hasInitialCenter;
   bool _userSelectedCenter = false;
   double _radiusMeters = 150;
+  SafePlaceCategory _category = SafePlaceCategory.other;
 
   @override
   void initState() {
@@ -772,6 +771,7 @@ class _SafePlacePickerPageState extends State<_SafePlacePickerPage> {
         latitude: _center.latitude,
         longitude: _center.longitude,
         radiusMeters: _radiusMeters,
+        category: _category,
       ),
     );
   }
@@ -889,6 +889,39 @@ class _SafePlacePickerPageState extends State<_SafePlacePickerPage> {
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        DropdownButtonFormField<SafePlaceCategory>(
+                          initialValue: _category,
+                          decoration: const InputDecoration(
+                            labelText: 'Place category',
+                            prefixIcon: Icon(Icons.category_outlined),
+                            border: OutlineInputBorder(),
+                            isDense: true,
+                          ),
+                          items: const [
+                            DropdownMenuItem(
+                              value: SafePlaceCategory.home,
+                              child: Text('Home'),
+                            ),
+                            DropdownMenuItem(
+                              value: SafePlaceCategory.school,
+                              child: Text('School'),
+                            ),
+                            DropdownMenuItem(
+                              value: SafePlaceCategory.work,
+                              child: Text('Work'),
+                            ),
+                            DropdownMenuItem(
+                              value: SafePlaceCategory.other,
+                              child: Text('Other'),
+                            ),
+                          ],
+                          onChanged: (value) {
+                            if (value != null) {
+                              setState(() => _category = value);
+                            }
+                          },
+                        ),
+                        const SizedBox(height: 10),
                         Row(
                           children: [
                             const Expanded(
@@ -965,17 +998,17 @@ class _FamilyMember extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final avatarColor = emergencyActive
-      ? BeaconColors.coral
-      : locationUpdatedAt != null
-        ? BeaconColors.blue
-        : isYou
-          ? BeaconColors.forest
-          : BeaconColors.ink;
+        ? BeaconColors.coral
+        : locationUpdatedAt != null
+            ? BeaconColors.blue
+            : isYou
+                ? BeaconColors.forest
+                : BeaconColors.ink;
     final avatarBackground = emergencyActive
-      ? BeaconColors.coral.withValues(alpha: 0.15)
-      : locationUpdatedAt != null
-        ? BeaconColors.blue.withValues(alpha: 0.18)
-        : const Color(0xFFE9EEE8);
+        ? BeaconColors.coral.withValues(alpha: 0.15)
+        : locationUpdatedAt != null
+            ? BeaconColors.blue.withValues(alpha: 0.18)
+            : const Color(0xFFE9EEE8);
     final label = emergencyActive
         ? 'SOS active · ${_relativeTime(locationUpdatedAt)}'
         : locationUpdatedAt != null
@@ -1014,7 +1047,9 @@ class _FamilyMember extends StatelessWidget {
                   width: 12,
                   height: 12,
                   decoration: BoxDecoration(
-                    color: emergencyActive ? BeaconColors.coral : BeaconColors.forest,
+                    color: emergencyActive
+                        ? BeaconColors.coral
+                        : BeaconColors.forest,
                     shape: BoxShape.circle,
                     border: Border.all(color: Colors.white, width: 2),
                   ),
@@ -1074,6 +1109,15 @@ String _formatVisitTime(int seconds) {
   }
   return '${duration.inMinutes}m';
 }
+
+String _safePlaceCategoryLabel(SafePlaceCategory category) =>
+    switch (category) {
+      SafePlaceCategory.home => 'Home',
+      SafePlaceCategory.school => 'School',
+      SafePlaceCategory.work => 'Work',
+      SafePlaceCategory.other => 'Other',
+      SafePlaceCategory.unknown => 'Unknown stop',
+    };
 
 String _relativeTime(DateTime? value) {
   if (value == null) return 'just now';

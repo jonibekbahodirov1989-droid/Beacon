@@ -34,6 +34,7 @@ Position _gpsPosition(
   double longitude,
   DateTime timestamp, {
   double accuracy = 5,
+  double speed = 0,
 }) =>
     Position(
       latitude: latitude,
@@ -44,7 +45,7 @@ Position _gpsPosition(
       altitudeAccuracy: 0,
       heading: 0,
       headingAccuracy: 0,
-      speed: 0,
+      speed: speed,
       speedAccuracy: 0,
     );
 
@@ -98,6 +99,53 @@ void main() {
         DateTime.utc(2026, 11, 6),
       ),
       1800,
+    );
+  });
+
+  test('trip records its maximum car speed from reliable GPS points', () {
+    final start = DateTime.utc(2026, 11, 5, 10);
+    final trip = TripService().recordTripFromPositions([
+      _gpsPosition(41.3, 69.2, start),
+      _gpsPosition(41.301, 69.2, start.add(const Duration(seconds: 10))),
+    ])!;
+
+    expect(trip.maxCarSpeedKmh, greaterThan(18));
+    expect(trip.points.last.speedKmh, closeTo(trip.maxCarSpeedKmh, 0.1));
+  });
+
+  test('unknown stops use a rounded 100m zone and 10 minute confirmation', () {
+    const latitude = 41.3;
+    const longitude = 69.2;
+    final center = TripService.roundedPlaceCenter(latitude, longitude);
+
+    expect(
+      Geolocator.distanceBetween(
+        latitude,
+        longitude,
+        center.latitude,
+        center.longitude,
+      ),
+      lessThanOrEqualTo(72),
+    );
+    expect(TripService.unknownStopRadiusMeters, 100);
+    expect(TripService.unknownStopConfirmationDuration.inMinutes, 10);
+  });
+
+  test('automatic tracking can persist and clear its next resume time', () {
+    final resumeAt = DateTime(2026, 11, 6);
+    final settings = UserSettings.fromMap(
+      UserSettings(
+        automaticTracking: true,
+        automaticTrackingResumeAt: resumeAt,
+      ).toMap(),
+    );
+
+    expect(settings.automaticTrackingResumeAt, resumeAt);
+    expect(
+      settings
+          .copyWith(clearAutomaticTrackingResumeAt: true)
+          .automaticTrackingResumeAt,
+      isNull,
     );
   });
 
@@ -255,6 +303,33 @@ void main() {
     expect(moved.last, const LatLng(41.301, 69.201));
   });
 
+  test('movement detector smooths speed before reporting activity', () {
+    final detector = MovementDetector();
+    final timestamp = DateTime.utc(2026, 11, 18);
+
+    detector.addSpeed(7.5, timestamp: timestamp);
+    final driving = detector.addSpeed(
+      7.5,
+      timestamp: timestamp.add(const Duration(seconds: 2)),
+    );
+    final ignoredNoise = detector.addSpeed(
+      90,
+      timestamp: timestamp.add(const Duration(seconds: 4)),
+    );
+
+    expect(driving.mode, MovementMode.driving);
+    expect(driving.speedKmh, closeTo(27, 0.1));
+    expect(ignoredNoise.mode, MovementMode.driving);
+
+    final walkingDetector = MovementDetector();
+    walkingDetector.addSpeed(1.4, timestamp: timestamp);
+    final walking = walkingDetector.addSpeed(
+      1.4,
+      timestamp: timestamp.add(const Duration(seconds: 2)),
+    );
+    expect(walking.mode, MovementMode.walking);
+  });
+
   test('phone-off GPS gaps break traces and are excluded from distance', () {
     final startTime = DateTime.utc(2026, 10, 18, 10);
     final positions = [
@@ -341,6 +416,53 @@ void main() {
     );
 
     expect(payload, isNot(contains('settings')));
+  });
+
+  test('automatic tracking preference survives settings serialization', () {
+    final settings = UserSettings.fromMap(
+      const UserSettings(automaticTracking: true).toMap(),
+    );
+
+    expect(settings.automaticTracking, isTrue);
+    expect(
+      const UserSettings().copyWith(automaticTracking: true).automaticTracking,
+      isTrue,
+    );
+    expect(
+      UserSettings.fromMap(const {'trackingEnabled': true}).automaticTracking,
+      isFalse,
+    );
+  });
+
+  testWidgets('automatic tracking starts on launch and pause disables it', (
+    WidgetTester tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final authService = _FakeAuthService(
+      initialUser: const AuthUser(uid: 'alex-id', email: 'alex@example.com'),
+    );
+    final locationService = _FakeLocationService();
+    final firestoreService = _AutomaticTrackingFirestoreService();
+
+    await tester.pumpWidget(BeaconApp(
+      authService: authService,
+      locationService: locationService,
+      firestoreService: firestoreService,
+      trackingNotificationsEnabled: false,
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+    await tester.pumpAndSettle();
+
+    expect(locationService.startCalls, 1);
+    expect(find.text('TRACKING LIVE'), findsOneWidget);
+
+    await tester.tap(find.text('Pause trip'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('TRACKING PAUSED'), findsOneWidget);
+    expect(firestoreService.savedSettings.last.automaticTracking, isFalse);
+    await authService.dispose();
   });
 
   testWidgets('tracking toggle can be driven by a real location service', (
@@ -756,11 +878,11 @@ void main() {
       home: Scaffold(body: InsightsPage(tripService: tripService)),
     ));
     await tester.pumpAndSettle();
+    expect(find.text('2.5'), findsOneWidget);
+    expect(find.text('No previous period data to compare yet'), findsOneWidget);
     await tester.drag(find.byType(ListView), const Offset(0, -500));
     await tester.pumpAndSettle();
 
-    expect(find.text('2.5'), findsOneWidget);
-    expect(find.text('No previous period data to compare yet'), findsOneWidget);
     expect(find.text('12% more than the previous period'), findsNothing);
     expect(find.textContaining('You covered 2.5 km across 1 trip'),
         findsOneWidget);
@@ -991,10 +1113,13 @@ void main() {
         userId: 'user-1',
         currentUser: const AuthUser(uid: 'user-1', email: 'owner@example.com'),
         firestoreService: firestoreService,
+        locationService: _FakeLocationService(),
       ),
     ));
     await tester.pumpAndSettle();
 
+    expect(find.text('YOUR MOVEMENT'), findsOneWidget);
+    expect(find.text('Tracking is paused'), findsOneWidget);
     expect(find.text('Maya R. needs help'), findsOneWidget);
     expect(find.text('41.30000, 69.20000'), findsOneWidget);
 
@@ -1185,6 +1310,7 @@ void main() {
           currentUser:
               const AuthUser(uid: 'user-1', email: 'owner@example.com'),
           firestoreService: firestoreService,
+          locationService: _FakeLocationService(),
           initialInvitations: const [invitation],
         ),
       ),
@@ -1346,7 +1472,8 @@ class _FakeLocationService extends LocationService {
   bool get trackingEnabled => _trackingEnabled;
 
   @override
-  Future<bool> requestTrackingPermission() async => true;
+  Future<bool> requestTrackingPermission({bool background = false}) async =>
+      true;
 
   @override
   double get trackedDistanceMeters => _hasActiveTrip ? 1234 : 0;
@@ -1411,6 +1538,22 @@ class _DelayedSettingsFirestoreService extends FirestoreService {
 
   void finishSaves() {
     if (!_saveCompleter.isCompleted) _saveCompleter.complete();
+  }
+}
+
+class _AutomaticTrackingFirestoreService extends FirestoreService {
+  final List<UserSettings> savedSettings = [];
+
+  @override
+  Future<UserSettings> fetchUserSettings(String uid) async =>
+      const UserSettings(automaticTracking: true);
+
+  @override
+  Stream<List<TripEntry>> watchTrips(String uid) => Stream.value(const []);
+
+  @override
+  Future<void> saveUserSettings(String uid, UserSettings settings) async {
+    savedSettings.add(settings);
   }
 }
 

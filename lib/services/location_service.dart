@@ -6,6 +6,103 @@ import 'package:permission_handler/permission_handler.dart';
 
 import 'trip_service.dart';
 
+enum MovementMode { unknown, stationary, walking, moving, driving }
+
+class MovementStatus {
+  const MovementStatus({
+    this.mode = MovementMode.unknown,
+    this.speedKmh = 0,
+    this.updatedAt,
+  });
+
+  final MovementMode mode;
+  final double speedKmh;
+  final DateTime? updatedAt;
+
+  bool get isKnown => mode != MovementMode.unknown;
+
+  bool get isFresh =>
+      updatedAt != null &&
+      DateTime.now().difference(updatedAt!) <= const Duration(seconds: 30);
+
+  String get label => switch (mode) {
+        MovementMode.unknown => 'Detecting movement',
+        MovementMode.stationary => 'Stopped',
+        MovementMode.walking => 'Walking',
+        MovementMode.moving => 'Moving',
+        MovementMode.driving => 'Driving',
+      };
+
+  String get emoji => switch (mode) {
+        MovementMode.unknown => '📍',
+        MovementMode.stationary => '⏸️',
+        MovementMode.walking => '🚶',
+        MovementMode.moving => '🚴',
+        MovementMode.driving => '🚗',
+      };
+}
+
+class MovementDetector {
+  final List<double> _recentSpeeds = [];
+  MovementMode _mode = MovementMode.unknown;
+  MovementMode _candidate = MovementMode.unknown;
+  int _candidateSamples = 0;
+  MovementStatus _status = const MovementStatus();
+
+  MovementStatus get status => _status;
+
+  MovementStatus addSpeed(double metersPerSecond, {DateTime? timestamp}) {
+    if (!metersPerSecond.isFinite ||
+        metersPerSecond < 0 ||
+        metersPerSecond > TripService.maximumPlausibleSpeedMetersPerSecond) {
+      return _status;
+    }
+
+    _recentSpeeds.add(metersPerSecond);
+    if (_recentSpeeds.length > 3) _recentSpeeds.removeAt(0);
+    final sortedSpeeds = [..._recentSpeeds]..sort();
+    final smoothedMetersPerSecond = sortedSpeeds[sortedSpeeds.length ~/ 2];
+    final speedKmh = smoothedMetersPerSecond * 3.6;
+    final candidate = switch (speedKmh) {
+      >= 18 => MovementMode.driving,
+      >= 9 => MovementMode.moving,
+      >= 1.5 => MovementMode.walking,
+      _ => MovementMode.stationary,
+    };
+
+    if (candidate == _mode) {
+      _candidate = candidate;
+      _candidateSamples = 0;
+    } else {
+      if (_candidate == candidate) {
+        _candidateSamples++;
+      } else {
+        _candidate = candidate;
+        _candidateSamples = 1;
+      }
+      if (_candidateSamples >= 2) {
+        _mode = candidate;
+        _candidateSamples = 0;
+      }
+    }
+
+    _status = MovementStatus(
+      mode: _mode,
+      speedKmh: speedKmh,
+      updatedAt: timestamp ?? DateTime.now(),
+    );
+    return _status;
+  }
+
+  void reset() {
+    _recentSpeeds.clear();
+    _mode = MovementMode.unknown;
+    _candidate = MovementMode.unknown;
+    _candidateSamples = 0;
+    _status = const MovementStatus();
+  }
+}
+
 class LocationService {
   static const maximumAcceptedAccuracyMeters = 50.0;
 
@@ -13,6 +110,9 @@ class LocationService {
       : _geolocator = geolocator ?? GeolocatorPlatform.instance;
 
   final GeolocatorPlatform _geolocator;
+  final MovementDetector _movementDetector = MovementDetector();
+  final ValueNotifier<MovementStatus> movementStatus =
+      ValueNotifier(const MovementStatus());
   final StreamController<Position> _positionController =
       StreamController<Position>.broadcast();
   StreamSubscription<Position>? _subscription;
@@ -75,8 +175,7 @@ class LocationService {
   void _startPositionUpdates() {
     _trackingEnabled = true;
     _trackingResumedAt = DateTime.now();
-    _subscription =
-        _geolocator
+    _subscription = _geolocator
         .getPositionStream(locationSettings: _trackingLocationSettings)
         .listen(_recordPosition);
     unawaited(_requestInitialPosition());
@@ -104,6 +203,15 @@ class LocationService {
         intervalDuration: const Duration(seconds: 2),
       );
     }
+    if (defaultTargetPlatform == TargetPlatform.iOS) {
+      return AppleSettings(
+        accuracy: LocationAccuracy.bestForNavigation,
+        activityType: ActivityType.fitness,
+        distanceFilter: 3,
+        allowBackgroundLocationUpdates: true,
+        showBackgroundLocationIndicator: true,
+      );
+    }
     return const LocationSettings(
       accuracy: LocationAccuracy.bestForNavigation,
       distanceFilter: 3,
@@ -119,17 +227,16 @@ class LocationService {
           timeLimit: Duration(seconds: 8),
         ),
       );
-      return _isUsablePosition(position, allowStale: false)
-          ? position
-          : null;
+      return _isUsablePosition(position, allowStale: false) ? position : null;
     } catch (_) {
       return null;
     }
   }
 
-  Future<bool> requestTrackingPermission() => _hasLocationPermission();
+  Future<bool> requestTrackingPermission({bool background = false}) =>
+      _hasLocationPermission(background: background);
 
-  Future<bool> _hasLocationPermission() async {
+  Future<bool> _hasLocationPermission({bool background = false}) async {
     if (!await _geolocator.isLocationServiceEnabled()) return false;
 
     var permission = await _geolocator.checkPermission();
@@ -146,7 +253,15 @@ class LocationService {
     if (!handlerPermission.isGranted) {
       handlerPermission = await Permission.locationWhenInUse.request();
     }
-    return handlerPermission.isGranted;
+    if (!handlerPermission.isGranted) return false;
+    if (background && defaultTargetPlatform == TargetPlatform.iOS) {
+      var alwaysPermission = await Permission.locationAlways.status;
+      if (!alwaysPermission.isGranted) {
+        alwaysPermission = await Permission.locationAlways.request();
+      }
+      return alwaysPermission.isGranted;
+    }
+    return true;
   }
 
   void _recordPosition(Position position, {bool allowStale = true}) {
@@ -197,7 +312,33 @@ class LocationService {
     _lastReceivedPositionAt = position.timestamp;
     _nextPositionStartsSegment = false;
     _lastKnownPosition = position;
+    movementStatus.value = _movementDetector.addSpeed(
+      _measuredSpeed(previous, position, startsSegment),
+      timestamp: position.timestamp,
+    );
     _positionController.add(position);
+  }
+
+  double _measuredSpeed(
+    Position? previous,
+    Position current,
+    bool startsSegment,
+  ) {
+    if (previous != null && !startsSegment) {
+      final elapsedSeconds =
+          current.timestamp.difference(previous.timestamp).inMilliseconds /
+              Duration.millisecondsPerSecond;
+      if (elapsedSeconds > 0) {
+        return Geolocator.distanceBetween(
+              previous.latitude,
+              previous.longitude,
+              current.latitude,
+              current.longitude,
+            ) /
+            elapsedSeconds;
+      }
+    }
+    return current.speed;
   }
 
   bool _isUsablePosition(Position position, {required bool allowStale}) {
@@ -225,6 +366,8 @@ class LocationService {
     _trackingEnabled = false;
     _previousTrackedPosition = null;
     _nextPositionStartsSegment = true;
+    _movementDetector.reset();
+    movementStatus.value = _movementDetector.status;
     final subscription = _subscription;
     _subscription = null;
     await subscription?.cancel();

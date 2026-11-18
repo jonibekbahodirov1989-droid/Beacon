@@ -6,6 +6,13 @@ import '../auth/auth_service.dart';
 import '../theme/beacon_theme.dart';
 import 'trip_service.dart';
 
+SafePlaceCategory _safePlaceCategory(String value) {
+  for (final category in SafePlaceCategory.values) {
+    if (category.name == value) return category;
+  }
+  return SafePlaceCategory.other;
+}
+
 class FamilyContact {
   const FamilyContact({
     required this.id,
@@ -239,6 +246,8 @@ class FamilyInvitation {
 class UserSettings {
   const UserSettings({
     this.trackingEnabled = false,
+    this.automaticTracking = false,
+    this.automaticTrackingResumeAt,
     this.approximateLocation = false,
     this.familySharing = false,
     this.notifications = true,
@@ -246,6 +255,8 @@ class UserSettings {
   });
 
   final bool trackingEnabled;
+  final bool automaticTracking;
+  final DateTime? automaticTrackingResumeAt;
   final bool approximateLocation;
   final bool familySharing;
   final bool notifications;
@@ -255,6 +266,9 @@ class UserSettings {
     final map = data ?? const <String, dynamic>{};
     return UserSettings(
       trackingEnabled: map['trackingEnabled'] as bool? ?? false,
+      automaticTracking: map['automaticTracking'] as bool? ?? false,
+      automaticTrackingResumeAt:
+          (map['automaticTrackingResumeAt'] as Timestamp?)?.toDate(),
       approximateLocation: map['approximateLocation'] as bool? ?? false,
       familySharing: map['familySharing'] as bool? ?? false,
       notifications: map['notifications'] as bool? ?? true,
@@ -266,6 +280,9 @@ class UserSettings {
 
   UserSettings copyWith({
     bool? trackingEnabled,
+    bool? automaticTracking,
+    DateTime? automaticTrackingResumeAt,
+    bool clearAutomaticTrackingResumeAt = false,
     bool? approximateLocation,
     bool? familySharing,
     bool? notifications,
@@ -273,6 +290,10 @@ class UserSettings {
   }) {
     return UserSettings(
       trackingEnabled: trackingEnabled ?? this.trackingEnabled,
+      automaticTracking: automaticTracking ?? this.automaticTracking,
+      automaticTrackingResumeAt: clearAutomaticTrackingResumeAt
+          ? null
+          : automaticTrackingResumeAt ?? this.automaticTrackingResumeAt,
       approximateLocation: approximateLocation ?? this.approximateLocation,
       familySharing: familySharing ?? this.familySharing,
       notifications: notifications ?? this.notifications,
@@ -282,6 +303,10 @@ class UserSettings {
 
   Map<String, dynamic> toMap() => {
         'trackingEnabled': trackingEnabled,
+        'automaticTracking': automaticTracking,
+        'automaticTrackingResumeAt': automaticTrackingResumeAt == null
+            ? null
+            : Timestamp.fromDate(automaticTrackingResumeAt!),
         'approximateLocation': approximateLocation,
         'familySharing': familySharing,
         'notifications': notifications,
@@ -770,6 +795,8 @@ class FirestoreService {
                 latitude: (data['latitude'] as num?)?.toDouble() ?? 0,
                 longitude: (data['longitude'] as num?)?.toDouble() ?? 0,
                 radiusMeters: (data['radiusMeters'] as num?)?.toDouble() ?? 150,
+                category:
+                    _safePlaceCategory(data['category'] as String? ?? 'other'),
                 totalVisitSeconds:
                     (data['totalVisitSeconds'] as num?)?.toInt() ?? 0,
                 lastVisitSeconds:
@@ -799,6 +826,12 @@ class FirestoreService {
                 endedAt: (data['endedAt'] as Timestamp).toDate(),
                 durationSeconds:
                     (data['durationSeconds'] as num?)?.toInt() ?? 0,
+                category: _safePlaceCategory(
+                  data['category'] as String? ?? 'other',
+                ),
+                latitude: (data['latitude'] as num?)?.toDouble(),
+                longitude: (data['longitude'] as num?)?.toDouble(),
+                radiusMeters: (data['radiusMeters'] as num?)?.toDouble(),
               );
             }).toList());
   }
@@ -817,6 +850,7 @@ class FirestoreService {
         'latitude': place.latitude,
         'longitude': place.longitude,
         'radiusMeters': place.radiusMeters,
+        'category': place.category.name,
         'totalVisitSeconds': place.totalVisitSeconds,
         'lastVisitSeconds': place.lastVisitSeconds,
         'lastVisitedAt': place.lastVisitedAt == null
@@ -834,6 +868,10 @@ class FirestoreService {
     required int visitSeconds,
     required DateTime startedAt,
     required DateTime endedAt,
+    SafePlaceCategory category = SafePlaceCategory.other,
+    double? latitude,
+    double? longitude,
+    double? radiusMeters,
   }) async {
     if (visitSeconds <= 0) return;
     final firestore = _ensureReady();
@@ -858,6 +896,10 @@ class FirestoreService {
             'startedAt': Timestamp.fromDate(startedAt),
             'endedAt': Timestamp.fromDate(endedAt),
             'durationSeconds': visitSeconds,
+            'category': category.name,
+            'latitude': latitude,
+            'longitude': longitude,
+            'radiusMeters': radiusMeters,
           });
         });
       },
@@ -1268,6 +1310,8 @@ class FirestoreService {
             latitude: (point['lat'] as num).toDouble(),
             longitude: (point['lng'] as num).toDouble(),
             segmentStart: point['segmentStart'] as bool? ?? entry.key == 0,
+            accuracyMeters: (point['accuracyMeters'] as num?)?.toDouble(),
+            speedKmh: (point['speedKmh'] as num?)?.toDouble(),
           );
         }).toList();
 
@@ -1280,6 +1324,16 @@ class FirestoreService {
           averageSpeedKmh: (data['averageSpeedKmh'] as num?)?.toDouble() ?? 0,
           name: data['name'] as String?,
           movingSeconds: (data['movingSeconds'] as num?)?.toDouble(),
+          maxCarSpeedKmh: (data['maxCarSpeedKmh'] as num?)?.toDouble() ??
+              points.fold<double>(
+                0,
+                (maximum, point) =>
+                    point.speedKmh != null &&
+                            point.speedKmh! >= 18 &&
+                            point.speedKmh! > maximum
+                        ? point.speedKmh!
+                        : maximum,
+              ),
         );
       }).toList();
     } on FirebaseException catch (error) {
@@ -1317,6 +1371,7 @@ class FirestoreService {
                   segmentStart:
                       point['segmentStart'] as bool? ?? entry.key == 0,
                   accuracyMeters: (point['accuracyMeters'] as num?)?.toDouble(),
+                  speedKmh: (point['speedKmh'] as num?)?.toDouble(),
                 );
               }).toList();
 
@@ -1331,6 +1386,17 @@ class FirestoreService {
                     (data['averageSpeedKmh'] as num?)?.toDouble() ?? 0,
                 name: data['name'] as String?,
                 movingSeconds: (data['movingSeconds'] as num?)?.toDouble(),
+                maxCarSpeedKmh:
+                    (data['maxCarSpeedKmh'] as num?)?.toDouble() ??
+                        points.fold<double>(
+                          0,
+                          (maximum, point) =>
+                              point.speedKmh != null &&
+                                      point.speedKmh! >= 18 &&
+                                      point.speedKmh! > maximum
+                                  ? point.speedKmh!
+                                  : maximum,
+                        ),
               );
             }).toList());
   }
@@ -1354,6 +1420,7 @@ class FirestoreService {
         'averageSpeedKmh': trip.averageSpeedKmh,
         'name': trip.name,
         'movingSeconds': trip.movingSeconds,
+        'maxCarSpeedKmh': trip.maxCarSpeedKmh,
         'points': trip.points
             .map(
               (point) => {
@@ -1361,6 +1428,7 @@ class FirestoreService {
                 'lng': point.longitude,
                 'segmentStart': point.segmentStart,
                 'accuracyMeters': point.accuracyMeters,
+                'speedKmh': point.speedKmh,
               },
             )
             .toList(),

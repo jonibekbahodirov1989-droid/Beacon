@@ -8,13 +8,17 @@ class TripLocation {
     required this.longitude,
     this.segmentStart = false,
     this.accuracyMeters,
+    this.speedKmh,
   });
 
   final double latitude;
   final double longitude;
   final bool segmentStart;
   final double? accuracyMeters;
+  final double? speedKmh;
 }
+
+enum SafePlaceCategory { home, school, work, other, unknown }
 
 class SafePlace {
   const SafePlace({
@@ -23,6 +27,7 @@ class SafePlace {
     required this.latitude,
     required this.longitude,
     this.radiusMeters = 120,
+    this.category = SafePlaceCategory.other,
     this.totalVisitSeconds = 0,
     this.lastVisitSeconds = 0,
     this.lastVisitedAt,
@@ -33,6 +38,7 @@ class SafePlace {
   final double latitude;
   final double longitude;
   final double radiusMeters;
+  final SafePlaceCategory category;
   final int totalVisitSeconds;
   final int lastVisitSeconds;
   final DateTime? lastVisitedAt;
@@ -55,6 +61,10 @@ class SafePlaceVisit {
     required this.startedAt,
     required this.endedAt,
     required this.durationSeconds,
+    this.category = SafePlaceCategory.other,
+    this.latitude,
+    this.longitude,
+    this.radiusMeters,
   });
 
   final String id;
@@ -63,6 +73,10 @@ class SafePlaceVisit {
   final DateTime startedAt;
   final DateTime endedAt;
   final int durationSeconds;
+  final SafePlaceCategory category;
+  final double? latitude;
+  final double? longitude;
+  final double? radiusMeters;
 
   int secondsOverlapping(DateTime start, DateTime end) {
     final overlapStart = startedAt.isAfter(start) ? startedAt : start;
@@ -70,6 +84,28 @@ class SafePlaceVisit {
     if (!overlapEnd.isAfter(overlapStart)) return 0;
     return overlapEnd.difference(overlapStart).inSeconds;
   }
+}
+
+class PlaceStayStatus {
+  const PlaceStayStatus({
+    required this.placeId,
+    required this.placeName,
+    required this.category,
+    required this.latitude,
+    required this.longitude,
+    required this.radiusMeters,
+    required this.startedAt,
+    required this.durationSeconds,
+  });
+
+  final String placeId;
+  final String placeName;
+  final SafePlaceCategory category;
+  final double latitude;
+  final double longitude;
+  final double radiusMeters;
+  final DateTime startedAt;
+  final int durationSeconds;
 }
 
 class TripEntry {
@@ -82,6 +118,7 @@ class TripEntry {
     required this.averageSpeedKmh,
     this.name,
     this.movingSeconds,
+    this.maxCarSpeedKmh = 0,
   });
 
   final String id;
@@ -92,6 +129,7 @@ class TripEntry {
   final double averageSpeedKmh;
   final String? name;
   final double? movingSeconds;
+  final double maxCarSpeedKmh;
 
   String get title {
     final customName = name?.trim();
@@ -106,6 +144,8 @@ class TripEntry {
 
 class TripService {
   static const maximumContinuousSampleGap = Duration(seconds: 20);
+  static const unknownStopConfirmationDuration = Duration(minutes: 10);
+  static const unknownStopRadiusMeters = 100.0;
   static const maximumAcceptedAccuracyMeters = 50.0;
   static const maximumPlausibleSpeedMetersPerSecond = 45.0;
   static const minimumReliableDisplacementMeters = 3.0;
@@ -157,6 +197,27 @@ class TripService {
         math.max(minimumReliableDisplacementMeters, accuracyThreshold);
   }
 
+  static ({double latitude, double longitude}) roundedPlaceCenter(
+    double latitude,
+    double longitude,
+  ) {
+    const metersPerLatitudeDegree = 111320.0;
+    final latitudeMeters = latitude * metersPerLatitudeDegree;
+    final roundedLatitude =
+        (latitudeMeters / unknownStopRadiusMeters).round() *
+            unknownStopRadiusMeters /
+            metersPerLatitudeDegree;
+    final longitudeScale =
+        (metersPerLatitudeDegree * math.cos(latitude * math.pi / 180)).abs();
+    final roundedLongitude = longitudeScale < 1
+        ? longitude
+        : ((longitude * longitudeScale / unknownStopRadiusMeters).round() *
+                unknownStopRadiusMeters /
+                longitudeScale)
+            .toDouble();
+    return (latitude: roundedLatitude, longitude: roundedLongitude);
+  }
+
   bool _isValidPosition(Position position) =>
       position.latitude.isFinite &&
       position.longitude.isFinite &&
@@ -204,6 +265,7 @@ class TripService {
     if (validPositions.isEmpty) return null;
     if (validPositions.length < 2) {
       final point = validPositions.first.position;
+      final speedKmh = point.speed.isFinite ? point.speed * 3.6 : 0.0;
       final trip = TripEntry(
         id: DateTime.now().microsecondsSinceEpoch.toString(),
         startedAt: point.timestamp,
@@ -214,12 +276,14 @@ class TripService {
             longitude: point.longitude,
             segmentStart: true,
             accuracyMeters: point.accuracy,
+            speedKmh: speedKmh,
           ),
         ],
         distanceMeters: 0,
         averageSpeedKmh: 0,
         name: name,
         movingSeconds: 0,
+        maxCarSpeedKmh: speedKmh >= 18 ? speedKmh : 0,
       );
       if (addToHistory) _trips.insert(0, trip);
       return trip;
@@ -230,16 +294,26 @@ class TripService {
     final endedAt = validPositions.last.position.timestamp;
     double totalDistance = 0;
     double movingSeconds = 0;
+    double maxCarSpeedKmh = 0;
     for (var index = 0; index < validPositions.length; index++) {
       final position = validPositions[index].position;
       final segmentStart = index == 0 ||
           validPositions[index].segmentStart ||
           !samplesAreContinuous(validPositions[index - 1].position, position);
+      final speedKmh = _speedKmhAt(
+        index == 0 ? null : validPositions[index - 1].position,
+        position,
+        segmentStart,
+      );
+      if (speedKmh >= 18 && speedKmh > maxCarSpeedKmh) {
+        maxCarSpeedKmh = speedKmh;
+      }
       points.add(TripLocation(
         latitude: position.latitude,
         longitude: position.longitude,
         segmentStart: segmentStart,
         accuracyMeters: position.accuracy,
+        speedKmh: speedKmh,
       ));
       if (segmentStart) continue;
 
@@ -267,10 +341,34 @@ class TripService {
       averageSpeedKmh: averageSpeed,
       name: name,
       movingSeconds: movingSeconds,
+      maxCarSpeedKmh: maxCarSpeedKmh,
     );
 
     if (addToHistory) _trips.insert(0, trip);
     return trip;
+  }
+
+  double _speedKmhAt(
+    Position? previous,
+    Position current,
+    bool segmentStart,
+  ) {
+    if (previous != null && !segmentStart) {
+      final elapsedSeconds =
+          current.timestamp.difference(previous.timestamp).inMilliseconds /
+              Duration.millisecondsPerSecond;
+      if (elapsedSeconds > 0) {
+        return Geolocator.distanceBetween(
+              previous.latitude,
+              previous.longitude,
+              current.latitude,
+              current.longitude,
+            ) /
+            elapsedSeconds *
+            3.6;
+      }
+    }
+    return current.speed.isFinite ? current.speed * 3.6 : 0;
   }
 
   double _distanceBetween(double lat1, double lon1, double lat2, double lon2) {
